@@ -1,0 +1,27 @@
+[project]
+name = "dl-tract-density-survival"
+version = "0.1.0"
+description = "Dependencies for deep learning research related to the compression of information present in the L-TDMaps in human glioblastoma "
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "ipykernel>=7.1.0",
+    "joblib>=1.5.3",
+    "jupyter>=1.1.1",
+    "lifelines>=0.30.0",
+    "matplotlib>=3.10.8",
+    "nibabel>=5.3.3",
+    "nilearn>=0.13.0",
+    "pandas>=2.3.3",
+    "python-dotenv>=1.2.2",
+    "scikit-learn>=1.7.2",
+    "scikit-survival>=0.25.0",
+    "seaborn>=0.13.2",
+    "statsmodels>=0.14.6",
+    "torch>=2.5.1",
+    "torchaudio>=2.5.1",
+    "torchvision>=0.20.1",
+    "tqdm>=4.67.3",
+    "umap-learn>=0.5.12",
+    "wandb>=0.25.1",
+]

@@ -1,0 +1,18 @@
+# files
+__init__.py
+.env
+*.npy
+*.json
+*.png
+
+# folders
+.venv
+__pycache__
+modelss
+wandb
+checkpoints
+splits
+
+# exploratory work
+results_ohbm.ipynb
+utils_old.py
