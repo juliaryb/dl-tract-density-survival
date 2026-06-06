@@ -250,7 +250,7 @@ class TDMapDataset(Dataset):
             vol = (vol - self.norm_mean) / (self.norm_std + 1e-8) # z-score normalization formula
         # if self.brain_mask is not None:
         # vol = vol * self.brain_mask # NOTE: This doesn't work when there's z-scoring because then some values are negative and the images get super weird 
-
+        
         return vol
 
     # ------------------------------------------------------------------

@@ -37,8 +37,10 @@ class Config:
     # Model
     # encoder_channels controls depth (len) and width (values) of the conv stack.
     # Decoder mirrors this in reverse. Input dims must be divisible by 2**len(channels).
-    encoder_channels: tuple = (8, 16, 32, 64)    
-    latent_dim: int = 2
+    # encoder_channels: tuple = (8, 16, 32, 64)
+    # encoder_channels: tuple = (16, 32, 64, 128)    
+    latent_dim: int = 4
+    kernel_size: int = 3
 
     # Training
     batch_size:   int   = 4
