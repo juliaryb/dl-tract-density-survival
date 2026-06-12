@@ -2,8 +2,8 @@
 import argparse
 import json
 import logging
-from pathlib import Path
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -24,10 +24,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-def make_loader(ids, id_to_cohort, cfg, bbox, padded_shape, norm_mean, norm_std, shuffle):
+def make_loader(ids, id_to_cohort, cfg, bbox, padded_shape, norm_mean, norm_std, shuffle, cache_dir=None):
     ds = build_dataset_from_ids(
         ids, id_to_cohort, cfg, bbox, padded_shape,
-        norm_mean, norm_std, cfg.normalisation,
+        norm_mean, norm_std, cfg.normalisation, cache_dir=cache_dir,
     )
     return torch.utils.data.DataLoader(
         ds, batch_size=cfg.batch_size, shuffle=shuffle,
@@ -38,19 +38,47 @@ def make_loader(ids, id_to_cohort, cfg, bbox, padded_shape, norm_mean, norm_std,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--latent-dim", type=int, required=True)
+    parser.add_argument("--normalisation", default=None,
+                        choices=["none", "log1p", "zscore", "log1p_zscore"],
+                        help="Override cfg.normalisation")
+    parser.add_argument("--no-lr-scheduler", action="store_true",
+                        help="Disable cosine annealing (flat LR)")
+    parser.add_argument("--early-stopping-delta", type=float, default=None,
+                        help="Override cfg.early_stopping_delta")
     args = parser.parse_args()
     latent_dim = args.latent_dim
 
-    cfg    = Config()
-    device = cfg.device
+    cfg = Config()
+    if args.normalisation is not None:
+        cfg.normalisation = args.normalisation
+    if args.no_lr_scheduler:
+        cfg.use_lr_scheduler = False
+    if args.early_stopping_delta is not None:
+        cfg.early_stopping_delta = args.early_stopping_delta
 
+    device = cfg.device
 
     stats_path = os.path.join(cfg.jsons_dir, "preprocessing_stats.json")
     stats        = load_preprocessing_stats(stats_path)
     bbox         = stats["bbox"]
     padded_shape = stats["padded_shape"]
-    norm_mean    = stats["norm_mean"]
-    norm_std     = stats["norm_std"]
+
+    # Select normalisation stats appropriate for the chosen normalisation type.
+    # log1p_zscore needs stats computed on log1p-transformed values (written by
+    # preprocess_and_cache.py). Falls back to raw stats with a warning if not found.
+    if cfg.normalisation == "zscore":
+        norm_mean, norm_std = stats["norm_mean"], stats["norm_std"]
+    elif cfg.normalisation == "log1p_zscore":
+        if "log1p_norm_mean" in stats:
+            norm_mean, norm_std = stats["log1p_norm_mean"], stats["log1p_norm_std"]
+        else:
+            logger.warning(
+                "log1p stats not found in preprocessing_stats.json — "
+                "run preprocess_and_cache.py first. Falling back to raw stats."
+            )
+            norm_mean, norm_std = stats["norm_mean"], stats["norm_std"]
+    else:
+        norm_mean = norm_std = None
 
     splits = load_splits(cfg.splits_dir)
     train_ids = splits["train"]
@@ -61,8 +89,13 @@ def main():
     with open(f"{cfg.jsons_dir}/id_to_cohort.json") as f:
         id_to_cohort = json.load(f)
 
+    cache_dir = cfg.cache_dir if Path(cfg.cache_dir).exists() else None
+    if cache_dir:
+        logger.info("Using pre-cached tensors from %s", cache_dir)
+
     loader_kwargs = dict(id_to_cohort=id_to_cohort, cfg=cfg, bbox=bbox,
-                        padded_shape=padded_shape, norm_mean=norm_mean, norm_std=norm_std)
+                         padded_shape=padded_shape, norm_mean=norm_mean, norm_std=norm_std,
+                         cache_dir=cache_dir)
 
     train_loader = make_loader(train_ids, shuffle=True,  **loader_kwargs)
     val_loader   = make_loader(val_ids,   shuffle=False, **loader_kwargs)
@@ -71,19 +104,30 @@ def main():
     logger.info("latent_dim=%d | parameters: %d", latent_dim, sum(p.numel() for p in
 model.parameters()))
 
+    sched_tag = "cosine" if cfg.use_lr_scheduler else "flat"
     wandb.init(
         project=cfg.wandb_project,
-        name=f"latent{latent_dim}",
-        config={"latent_dim": latent_dim, "normalisation": cfg.normalisation,
-                "lr": cfg.lr, "weight_decay": cfg.weight_decay, "batch_size":
-cfg.batch_size},
+        name=f"latent{latent_dim}_{cfg.normalisation}_{sched_tag}lr",
+        config={
+            "latent_dim":            latent_dim,
+            "normalisation":         cfg.normalisation,
+            "use_lr_scheduler":      cfg.use_lr_scheduler,
+            "early_stopping_delta":  cfg.early_stopping_delta,
+            "lr":                    cfg.lr,
+            "weight_decay":          cfg.weight_decay,
+            "batch_size":            cfg.batch_size,
+            "patience":              cfg.patience,
+            "checkpoint_every":      cfg.checkpoint_every,
+        },
     )
 
-    # TODO: add a tqqm to have an output from training that can be observed in the .err file on athena
     history = train(
         model, train_loader, val_loader, device, cfg.checkpoints_dir, cfg.model_name,
         epochs=cfg.epochs, lr=cfg.lr, weight_decay=cfg.weight_decay,
-        patience=cfg.patience, recon_dataset=val_loader.dataset
+        patience=cfg.patience, recon_dataset=val_loader.dataset,
+        use_lr_scheduler=cfg.use_lr_scheduler,
+        early_stopping_delta=cfg.early_stopping_delta,
+        checkpoint_every=cfg.checkpoint_every,
     )
 
     # TODO: maybe a file system per experiment idk

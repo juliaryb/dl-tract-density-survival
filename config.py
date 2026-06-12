@@ -6,11 +6,11 @@ from dataclasses import dataclass, field
 @dataclass
 class Config:
     # Environment paths
-    # gbm_root: str = "/home/joan/Desktop/PROJECTS/Glioblastomas" # uncomment for local
-    gbm_root: str = "/net/tscratch/people/plgjuliaryb/data/Glioblastomas" # uncomment for Athena
+    gbm_root: str = "/home/joan/Desktop/PROJECTS/Glioblastomas" # uncomment for local
+    # gbm_root: str = "/net/tscratch/people/plgjuliaryb/data/Glioblastomas" # uncomment for Athena
     mni_dir:  str = "/home/joan/Documents/MNI_ICBM_2009b_NLIN_ASYM"
-    # root:     str = "/home/joan/Desktop/PROJECTS/Julia/code/dl-tract-density-survival"
-    root:     str = "/net/tscratch/people/plgjuliaryb/data/dl-tract-density-survival-outputs"
+    root:     str = "/home/joan/Desktop/PROJECTS/Julia/code/dl-tract-density-survival"
+    # root:     str = "/net/tscratch/people/plgjuliaryb/data/dl-tract-density-survival-outputs"
     clinical_csv: str = "/home/joan/Desktop/PROJECTS/Glioblastomas/RESULTS-GBM_4-cohorts_Tissues/data-clinical_TD-tissues_4-cohorts.csv"
 
     # Data
@@ -45,16 +45,20 @@ class Config:
     kernel_size: int = 3
 
     # Training
-    batch_size:   int   = 4
-    num_workers:  int   = 4
-    lr:           float = 1e-4
-    weight_decay: float = 1e-4
-    epochs:       int   = 300
-    patience:     int   = 20
+    batch_size:           int   = 4
+    num_workers:          int   = 4
+    lr:                   float = 1e-4
+    weight_decay:         float = 1e-4
+    epochs:               int   = 300
+    patience:             int   = 20
+    use_lr_scheduler:     bool  = True
+    early_stopping_delta: float = 1e-4
+    checkpoint_every:     int   = 10 # (0 = off)
 
     # W&B
-    wandb_project: str = "gbm-tdmap-autoencoder"
+    # wandb_project: str = "gbm-tdmap-autoencoder"
     # wandb_project: str = "gbm-tdmap-autoencoder-athena"
+    wandb_project: str = "ae-baseline-sweep"
 
     # derived paths (not included in asdict, computed from fields above)
     @property
@@ -88,6 +92,10 @@ class Config:
     @property
     def jsons_dir(self) -> str:
         return os.path.join(self.root, "jsons")
+
+    @property
+    def cache_dir(self) -> str:
+        return os.path.join(self.root, "cache")
 
     # @property
     # def preprocessing_path(self) -> str:

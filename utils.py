@@ -132,6 +132,65 @@ def regrid_map(
 _VALID_NORMALISATIONS = {"none", "log1p", "zscore", "log1p_zscore"}
 
 
+def _apply_normalisation(
+    vol: torch.Tensor,
+    normalisation: str,
+    norm_mean: float | None,
+    norm_std: float | None,
+) -> torch.Tensor:
+    """Apply log1p and/or z-score normalisation to a volume tensor in-place order."""
+    if normalisation in ("log1p", "log1p_zscore"):
+        vol = torch.log1p(vol)
+    if normalisation in ("zscore", "log1p_zscore"):
+        vol = (vol - norm_mean) / (norm_std + 1e-8)
+    return vol
+
+
+class CachedTDMapDataset(Dataset):
+    """
+    Fast drop-in for TDMapDataset that reads pre-cached float16 tensors written
+    by preprocess_and_cache.py (crop + pad applied, no normalization).
+    Normalization is applied on-the-fly — no file I/O after the initial load.
+
+    Parameters
+    ----------
+    subjects      : Subject ID list.
+    cache_dir     : Directory containing {subject_id}.pt files.
+    normalisation : Same options as TDMapDataset.
+    norm_mean     : Required for "zscore" / "log1p_zscore".
+    norm_std      : Required for "zscore" / "log1p_zscore".
+    """
+
+    def __init__(
+        self,
+        subjects: list[str],
+        cache_dir: str,
+        normalisation: str = "zscore",
+        norm_mean: float | None = None,
+        norm_std: float | None = None,
+    ) -> None:
+        if normalisation not in _VALID_NORMALISATIONS:
+            raise ValueError(f"normalisation must be one of {_VALID_NORMALISATIONS}, got {normalisation!r}")
+        if normalisation in ("zscore", "log1p_zscore") and (norm_mean is None or norm_std is None):
+            raise ValueError(f"norm_mean and norm_std are required when normalisation={normalisation!r}")
+
+        self.subjects = list(subjects)
+        self.cache_dir = Path(cache_dir)
+        self.normalisation = normalisation
+        self.norm_mean = norm_mean
+        self.norm_std = norm_std
+
+    def __len__(self) -> int:
+        return len(self.subjects)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        # Load float16 tensor and cast to float32 for training (cast is near-zero cost)
+        vol = torch.load(
+            self.cache_dir / f"{self.subjects[idx]}.pt", weights_only=True
+        ).to(torch.float32)
+        return _apply_normalisation(vol, self.normalisation, self.norm_mean, self.norm_std)
+
+
 class TDMapDataset(Dataset):
     """
     PyTorch Dataset for 3D Tract Density Maps.
@@ -244,14 +303,9 @@ class TDMapDataset(Dataset):
             # F.pad takes padding in reverse dim order: (W_left, W_right, H_left, H_right, D_left, D_right)
             vol = F.pad(vol, (0, pw, 0, ph, 0, pd))
 
-        if self.normalisation in ("log1p", "log1p_zscore"):
-            vol = torch.log1p(vol)
-        if self.normalisation in ("zscore", "log1p_zscore"):
-            vol = (vol - self.norm_mean) / (self.norm_std + 1e-8) # z-score normalization formula
         # if self.brain_mask is not None:
-        # vol = vol * self.brain_mask # NOTE: This doesn't work when there's z-scoring because then some values are negative and the images get super weird 
-        
-        return vol
+        # vol = vol * self.brain_mask # NOTE: This doesn't work when there's z-scoring because then some values are negative and the images get super weird
+        return _apply_normalisation(vol, self.normalisation, self.norm_mean, self.norm_std)
 
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
@@ -401,13 +455,15 @@ def build_dataset_from_ids(
     norm_mean: float | None = None,
     norm_std: float | None = None,
     normalisation: str = "log1p_zscore",
-    brain_mask: torch.Tensor | None = None
-) -> ConcatDataset:
+    brain_mask: torch.Tensor | None = None,
+    cache_dir: str | None = None,
+) -> Dataset:
     """
-    Build a ConcatDataset from a flat list of subject IDs spanning multiple cohorts.
+    Build a dataset from a flat list of subject IDs spanning multiple cohorts.
 
-    Groups IDs by cohort and constructs one TDMapDataset per cohort, then
-    concatenates them. All preprocessing args are forwarded to TDMapDataset.
+    If cache_dir is provided and exists, returns a CachedTDMapDataset (fast,
+    reads pre-cached float16 tensors from preprocess_and_cache.py). Otherwise
+    falls back to TDMapDataset (reads NIfTI files via nibabel).
 
     Parameters
     ----------
@@ -416,11 +472,21 @@ def build_dataset_from_ids(
     cfg          : Config instance supplying paths and data parameters.
     bbox         : Bounding box from compute_bounding_box(). Optional crop.
     padded_shape : Target shape from bbox_to_padded_shape(). Requires bbox.
-    norm_mean     : Z-score mean. Required when normalisation is "zscore" or "log1p_zscore".
-    norm_std      : Z-score std. Required when normalisation is "zscore" or "log1p_zscore".
-    normalisation : One of "none" | "log1p" | "zscore" | "log1p_zscore".
-    brain_mask    : If passed the normalisation is done within the brain mask
+    norm_mean    : Z-score mean. Required when normalisation is "zscore" or "log1p_zscore".
+    norm_std     : Z-score std. Required when normalisation is "zscore" or "log1p_zscore".
+    normalisation: One of "none" | "log1p" | "zscore" | "log1p_zscore".
+    brain_mask   : If passed, normalisation is done within the brain mask (TDMapDataset only).
+    cache_dir    : Path to directory of pre-cached .pt tensors. If set, uses CachedTDMapDataset.
     """
+    if cache_dir is not None:
+        return CachedTDMapDataset(
+            subjects=sids,
+            cache_dir=cache_dir,
+            normalisation=normalisation,
+            norm_mean=norm_mean,
+            norm_std=norm_std,
+        )
+
     cohort_buckets: dict[str, list[str]] = {c: [] for c in cfg.cohort_dirs}
     for sid in sids:
         cohort_buckets[id_to_cohort[sid]].append(sid)

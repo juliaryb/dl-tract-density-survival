@@ -82,12 +82,18 @@ def train(
     patience: int = 20,
     recon_dataset: torch.utils.data.Dataset | None = None,
     log_image_every: int = 10,
+    use_lr_scheduler: bool = True,
+    early_stopping_delta: float = 1e-4,
+    checkpoint_every: int = 10,
 ) -> dict[str, list[float]]:
     save_path = os.path.join(checkpoints_dir, model_name)
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        if use_lr_scheduler else None
+    )
 
     best_val_loss = float("inf")
     patience_counter = 0
@@ -99,7 +105,8 @@ def train(
     for epoch in range(epochs):
         train_loss = _run_epoch(model, train_loader, device, optimizer)
         val_loss   = _run_epoch(model, val_loader,   device)
-        scheduler.step()
+        if scheduler is not None:
+            scheduler.step()
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
@@ -107,7 +114,7 @@ def train(
         wandb.log({
             "train_loss": train_loss,
             "val_loss":   val_loss,
-            "lr":         scheduler.get_last_lr()[0],
+            "lr":         scheduler.get_last_lr()[0] if scheduler is not None else lr,
             "epoch":      epoch,
         }, step=epoch)
 
@@ -117,7 +124,11 @@ def train(
         if epoch % 10 == 0:
             logger.info("Epoch %3d | train %.4f | val %.4f", epoch, train_loss, val_loss)
 
-        if val_loss < best_val_loss:
+        if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
+            periodic_path = save_path.replace("-best.pt", f"-epoch{epoch+1}.pt")
+            torch.save(model.state_dict(), periodic_path)
+
+        if val_loss < best_val_loss - early_stopping_delta:
             best_val_loss = val_loss
             patience_counter = 0
             torch.save(model.state_dict(), save_path)
