@@ -4,6 +4,7 @@ __init__.py
 *.npy
 # *.json
 *.png
+dl-tract-density-survival.code-workspace
 
 # folders
 .venv
@@ -12,6 +13,7 @@ modelss
 wandb
 checkpoints
 # splits
+logs
 
 # exploratory work
 results_ohbm.ipynb

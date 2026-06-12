@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 import wandb
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,8 @@ def train(
     train_loader: torch.utils.data.DataLoader,
     val_loader: torch.utils.data.DataLoader,
     device: torch.device,
-    save_path: str,
+    checkpoints_dir: str,
+    model_name: str,
     epochs: int = 300,
     lr: float = 1e-4,
     weight_decay: float = 1e-4,
@@ -81,6 +83,7 @@ def train(
     recon_dataset: torch.utils.data.Dataset | None = None,
     log_image_every: int = 10,
 ) -> dict[str, list[float]]:
+    save_path = os.path.join(checkpoints_dir, model_name)
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -89,6 +92,9 @@ def train(
     best_val_loss = float("inf")
     patience_counter = 0
     history: dict[str, list[float]] = {"train_loss": [], "val_loss": []}
+
+    logger.info("Training on device: %s | model device: %s", device,
+    next(model.parameters()).device)
 
     for epoch in range(epochs):
         train_loss = _run_epoch(model, train_loader, device, optimizer)

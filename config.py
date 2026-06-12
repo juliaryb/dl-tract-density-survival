@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Config:
-    # Environment paths (edit for your machine)
-    gbm_root: str = "/home/joan/Desktop/PROJECTS/Glioblastomas"
+    # Environment paths
+    # gbm_root: str = "/home/joan/Desktop/PROJECTS/Glioblastomas" # uncomment for local
+    gbm_root: str = "/net/tscratch/people/plgjuliaryb/data/Glioblastomas" # uncomment for Athena
     mni_dir:  str = "/home/joan/Documents/MNI_ICBM_2009b_NLIN_ASYM"
-    root:     str = "/home/joan/Desktop/PROJECTS/Julia/code/dl-tract-density-survival"
+    # root:     str = "/home/joan/Desktop/PROJECTS/Julia/code/dl-tract-density-survival"
+    root:     str = "/net/tscratch/people/plgjuliaryb/data/dl-tract-density-survival-outputs"
     clinical_csv: str = "/home/joan/Desktop/PROJECTS/Glioblastomas/RESULTS-GBM_4-cohorts_Tissues/data-clinical_TD-tissues_4-cohorts.csv"
 
     # Data
@@ -52,6 +54,7 @@ class Config:
 
     # W&B
     wandb_project: str = "gbm-tdmap-autoencoder"
+    # wandb_project: str = "gbm-tdmap-autoencoder-athena"
 
     # derived paths (not included in asdict, computed from fields above)
     @property
@@ -67,13 +70,34 @@ class Config:
         return os.path.join(self.root, "splits")
 
     @property
-    def save_path(self) -> str:
-        return os.path.join(self.root, "checkpoints", "autoencoder_best.pt")
+    def checkpoints_dir(self) -> str:
+        return os.path.join(self.root, "checkpoints")
+    
+    @property
+    def history_dir(self) -> str:
+        return os.path.join(self.root, "history")
+    
+    @property
+    def latents_dir(self) -> str:
+        return os.path.join(self.root, "latents")
+
+    # @property
+    # def save_path(self) -> str:
+    #     return os.path.join(self.root, "checkpoints", "autoencoder_best.pt")
 
     @property
-    def preprocessing_path(self) -> str:
-        return os.path.join(self.root, "preprocessing_stats.json")
+    def jsons_dir(self) -> str:
+        return os.path.join(self.root, "jsons")
+
+    # @property
+    # def preprocessing_path(self) -> str:
+    #     return os.path.join(self.root, "preprocessing_stats.json")
 
     @property
     def device(self) -> torch.device:
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    @property
+    def model_name(self) -> str:
+      return f"autoencoder-{self.latent_dim}-best.pt"
+
