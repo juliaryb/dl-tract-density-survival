@@ -9,9 +9,6 @@ Also computes and saves both raw and log1p normalisation stats (training set onl
 no data leakage) into preprocessing_stats.json.
 log1p stats differ from raw stats because log1p compresses the right-skewed
 distribution, giving a completely different mean and std.
-
-Usage:
-    python preprocess_and_cache.py
 """
 
 import json
@@ -24,6 +21,9 @@ import torch.nn.functional as F
 
 from config import Config
 from utils import (
+    compute_bounding_box,
+    bbox_to_padded_shape,
+    load_brain_mask,
     CachedTDMapDataset,
     compute_normalisation_stats,
     load_preprocessing_stats,
@@ -124,13 +124,18 @@ def main() -> None:
     # The resulting stats are stored under separate keys so train_sweep.py
     # can select the right ones per normalisation type.
     # ------------------------------------------------------------------
+    bbox         = compute_bounding_box(cfg.brain_mask)
+    padded_shape = bbox_to_padded_shape(bbox)
+
+    brain_mask = load_brain_mask(cfg.brain_mask, bbox, padded_shape)
+
     logger.info("Computing raw stats (used for 'zscore') ...")
     raw_ds    = CachedTDMapDataset(train_ids, cache_dir=str(cache_dir), normalisation="none")
-    raw_stats = compute_normalisation_stats(raw_ds)
+    raw_stats = compute_normalisation_stats(raw_ds, brain_mask)
 
     logger.info("Computing log1p stats (used for 'log1p_zscore') ...")
     log1p_ds    = CachedTDMapDataset(train_ids, cache_dir=str(cache_dir), normalisation="log1p")
-    log1p_stats = compute_normalisation_stats(log1p_ds)
+    log1p_stats = compute_normalisation_stats(log1p_ds, brain_mask)
 
     stats["norm_mean"]       = raw_stats["mean"]
     stats["norm_std"]        = raw_stats["std"]

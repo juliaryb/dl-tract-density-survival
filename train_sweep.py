@@ -46,9 +46,9 @@ def main():
     parser.add_argument("--early-stopping-delta", type=float, default=None,
                         help="Override cfg.early_stopping_delta")
     args = parser.parse_args()
-    latent_dim = args.latent_dim
 
     cfg = Config()
+    cfg.latent_dim = args.latent_dim
     if args.normalisation is not None:
         cfg.normalisation = args.normalisation
     if args.no_lr_scheduler:
@@ -100,16 +100,15 @@ def main():
     train_loader = make_loader(train_ids, shuffle=True,  **loader_kwargs)
     val_loader   = make_loader(val_ids,   shuffle=False, **loader_kwargs)
 
-    model = Autoencoder(padded_shape, latent_dim).to(device)
-    logger.info("latent_dim=%d | parameters: %d", latent_dim, sum(p.numel() for p in
-model.parameters()))
+    model = Autoencoder(padded_shape, cfg.latent_dim).to(device)
+    logger.info("latent_dim=%d | parameters: %d", cfg.latent_dim, sum(p.numel() for p in model.parameters()))
 
     sched_tag = "cosine" if cfg.use_lr_scheduler else "flat"
     wandb.init(
         project=cfg.wandb_project,
-        name=f"latent{latent_dim}_{cfg.normalisation}_{sched_tag}lr",
+        name=f"latent{cfg.latent_dim}_{cfg.normalisation}_{sched_tag}lr",
         config={
-            "latent_dim":            latent_dim,
+            "latent_dim":            cfg.latent_dim,
             "normalisation":         cfg.normalisation,
             "use_lr_scheduler":      cfg.use_lr_scheduler,
             "early_stopping_delta":  cfg.early_stopping_delta,
@@ -130,9 +129,9 @@ model.parameters()))
         checkpoint_every=cfg.checkpoint_every,
     )
 
-    # TODO: maybe a file system per experiment idk
-    # TODO: print the used device and maybe params 
-    # json.dump(history, open(f"{cfg.jsons_dir}/history.json", "w"))
+    history_path = Path(cfg.history_dir) / f"{cfg.run_tag}.json"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    json.dump(history, open(history_path, "w"))
 
     # model.load_state_dict(torch.load(save_path, map_location=device))
 

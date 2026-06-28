@@ -26,7 +26,8 @@ def _run_epoch(
         for batch in loader:
             batch = batch.to(device)
             recon, _ = model(batch)
-            loss = F.mse_loss(recon, batch)
+            # loss = F.mse_loss(recon, batch)
+            loss = ((recon - batch) ** 2).mean()
             if is_train:
                 optimizer.zero_grad()
                 loss.backward()
@@ -125,7 +126,7 @@ def train(
             logger.info("Epoch %3d | train %.4f | val %.4f", epoch, train_loss, val_loss)
 
         if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
-            periodic_path = save_path.replace("-best.pt", f"-epoch{epoch+1}.pt")
+            periodic_path = Path(save_path).parent / f"epoch{epoch+1}.pt"
             torch.save(model.state_dict(), periodic_path)
 
         if val_loss < best_val_loss - early_stopping_delta:
@@ -158,7 +159,7 @@ CPU."""
     with torch.no_grad():
         for batch in loader:
             codes.append(model.encode(batch.to(device)).cpu())
-    return torch.cat(codes)
+    return torch.cat(codes) # concatenation of codes along the first dim (batch size)
 
 # """
 # Training loop, evaluation, and latent encoding for the TDMap autoencoder.

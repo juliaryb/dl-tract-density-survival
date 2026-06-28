@@ -373,6 +373,7 @@ def compute_normalisation_stats(dataset: Dataset, mask: torch.Tensor | None = No
     for i in range(len(dataset)):
         vol = dataset[i].float()
         flat = vol[mask > 0].flatten() if mask is not None else vol.flatten()
+        logger.info(f"Mask present: {mask is not None}")
         total_sum    += flat.sum().item()
         total_sq_sum += flat.pow(2).sum().item()
         total_count  += flat.numel()

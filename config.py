@@ -6,13 +6,15 @@ from dataclasses import dataclass, field
 @dataclass
 class Config:
     # Environment paths
-    gbm_root: str = "/home/joan/Desktop/PROJECTS/Glioblastomas" # uncomment for local
-    # gbm_root: str = "/net/tscratch/people/plgjuliaryb/data/Glioblastomas" # uncomment for Athena
-    mni_dir:  str = "/home/joan/Documents/MNI_ICBM_2009b_NLIN_ASYM"
-    root:     str = "/home/joan/Desktop/PROJECTS/Julia/code/dl-tract-density-survival"
-    # root:     str = "/net/tscratch/people/plgjuliaryb/data/dl-tract-density-survival-outputs"
-    clinical_csv: str = "/home/joan/Desktop/PROJECTS/Glioblastomas/RESULTS-GBM_4-cohorts_Tissues/data-clinical_TD-tissues_4-cohorts.csv"
-
+    # gbm_root: str = "/home/joan/Desktop/PROJECTS/Glioblastomas" # uncomment for local
+    gbm_root: str = "/net/tscratch/people/plgjuliaryb/data/Glioblastomas" # uncomment for Athena
+    # mni_dir:  str = "/home/joan/Documents/MNI_ICBM_2009b_NLIN_ASYM"
+    mni_dir:  str = "/net/tscratch/people/plgjuliaryb/data/MNI_ICBM_2009b_NLIN_ASYM"
+    # root:     str = "/home/joan/Desktop/PROJECTS/Julia/code/dl-tract-density-survival"
+    root:     str = "/net/tscratch/people/plgjuliaryb/data/dl-tract-density-survival-outputs"
+    # clinical_csv: str = "/home/joan/Desktop/PROJECTS/Glioblastomas/RESULTS-GBM_4-cohorts_Tissues/data-clinical_TD-tissues_4-cohorts.csv"
+    clinical_csv: str = "/net/tscratch/people/plgjuliaryb/data/Glioblastomas/data-clinical_TD-tissues_4-cohorts.csv"
+    
     # Data
     voxel_res: float = 1.5
     tissue:    str   = "whole"
@@ -58,7 +60,8 @@ class Config:
     # W&B
     # wandb_project: str = "gbm-tdmap-autoencoder"
     # wandb_project: str = "gbm-tdmap-autoencoder-athena"
-    wandb_project: str = "ae-baseline-sweep"
+    # wandb_project: str = "ae-baseline-sweep"
+    wandb_project: str = "ae-latent-dims"
 
     # derived paths (not included in asdict, computed from fields above)
     @property
@@ -74,8 +77,13 @@ class Config:
         return os.path.join(self.root, "splits")
 
     @property
+    def run_tag(self) -> str:
+        sched_tag = "cosine" if self.use_lr_scheduler else "flat"
+        return f"latent{self.latent_dim}_{self.normalisation}_{sched_tag}lr"
+
+    @property
     def checkpoints_dir(self) -> str:
-        return os.path.join(self.root, "checkpoints")
+        return os.path.join(self.root, "checkpoints", self.run_tag)
     
     @property
     def history_dir(self) -> str:
@@ -107,5 +115,5 @@ class Config:
     
     @property
     def model_name(self) -> str:
-      return f"autoencoder-{self.latent_dim}-best.pt"
+        return "best.pt"
 
