@@ -38,14 +38,14 @@ _LATENT_DIMS = [2, 4, 8, 16, 32, 64, 128]
 
 def _print_table(results: dict) -> None:
     header = (
-        f"\n{'Run':<35} {'R²':>7} {'±':>1} {'std':>6}"
+        f"\n{'Run':<35} {'R²':>7} {'±':>1} {'std_err':>6}"
         f"  {'MAE':>8}  {'Pearson r':>9}  {'SSIM':>7}"
     )
     print(header)
     print("-" * len(header))
     for tag, m in sorted(results.items(), key=lambda x: -x[1]["r2"]["mean"]):
         print(
-            f"{tag:<35} {m['r2']['mean']:>7.4f} ± {m['r2']['std']:>6.4f}"
+            f"{tag:<35} {m['r2']['mean']:>7.4f} ± {m['r2']['std_err']:>6.4f}"
             f"  {m['mae']['mean']:>8.4f}  {m['pearson_r']['mean']:>9.4f}"
             f"  {m['ssim']['mean']:>7.4f}"
         )
@@ -92,11 +92,11 @@ def compare_latent_dims(raw_dataset, stats: dict, device, out_dir: Path) -> None
 
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.errorbar(dims, means, yerr=stds, marker="o", capsize=4)
-    ax.set_xscale("log", base=2)
+    # ax.set_xscale("log", base=2)
     ax.set_xticks(dims)
     ax.set_xticklabels(dims)
     ax.set_xlabel("Latent dimension")
-    ax.set_ylabel("R² (test set, mean ± std)")
+    ax.set_ylabel("R² (test set, mean ± std_err)")
     ax.set_title("Reconstruction quality vs latent dimension")
     fig.tight_layout()
     fig_path = out_dir / "latent_dims_reconstruction.png"

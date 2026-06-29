@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from scipy.stats import pearsonr
 from skimage.metrics import structural_similarity
-
+from scipy.stats import sem
 from config import Config
 from model import Autoencoder
 
@@ -89,7 +89,7 @@ def summarize(per_subject: list[dict]) -> dict:
     return {
         metric: {
             "mean": float(np.mean([s[metric] for s in per_subject])),
-            "std":  float(np.std( [s[metric] for s in per_subject])),
+            "std_err":  float(sem( [s[metric] for s in per_subject])),
         }
         for metric in ("r2", "mae", "mse", "pearson_r", "ssim")
     }
