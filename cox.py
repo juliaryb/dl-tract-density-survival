@@ -3,23 +3,26 @@ Cox proportional hazards analysis on AE latent codes across latent dimensions.
 
 For each latent dim:
   1. Encode all subjects with the trained AE (cached to disk on first run).
-  2. Fit three Cox models on train+val subjects.
-  3. Evaluate concordance (C-index) on held-out test subjects.
+  2. Merge with clinical data (all subjects, regardless of AE train/val/test split).
+  3. Compare a "clinical" (age, sex) and a "clinical+latent" (age, sex, z1..zN)
+     Cox model via stratified k-fold cross-validation.
 
-Models:
-  clinical          — age, sex
-  latent            — z1 ... zN
-  clinical+latent   — age, sex, z1 ... zN
+Per-fold, per-model outputs (nothing is averaged away):
+  jsons/cox_results/latent{dim}_model_folds.csv       — one row per (fold, model)
+  jsons/cox_results/latent{dim}_covariate_folds.csv   — one row per (fold, model, covariate)
+  jsons/cox_results/latent{dim}_covariate_summary.csv — one row per (model, covariate)
+  jsons/cox_results/model_comparison.json             — mean/std C-index per model, all dims
 """
 import json
 import logging
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 from lifelines import CoxPHFitter
+from lifelines.utils import concordance_index
+from sklearn.model_selection import StratifiedKFold
 
 from config import Config
 from model import Autoencoder
@@ -35,6 +38,7 @@ LATENT_DIMS      = [2, 4, 6, 8, 12, 16, 32, 64, 128]
 DURATION_COL     = "OS (days) - corrected"
 EVENT_COL        = "status"
 CLINICAL_COLS    = ["age", "sex"]
+N_SPLITS         = 5
 
 
 def _get_or_encode(cfg: Config, all_ids: list[str], id_to_cohort: dict,
@@ -94,30 +98,125 @@ def _build_df(codes: np.ndarray, ids: list[str],
     return df, z_cols
 
 
+def _strat_key(df: pd.DataFrame) -> pd.Series:
+    """Stratification key combining cohort and censoring status."""
+    return df["cohort"].astype(str) + "_" + df[EVENT_COL].astype(str)
+
+
+def _fit_fold_model(df_train: pd.DataFrame, df_test: pd.DataFrame,
+                     covariates: list[str], penalizer: float = 0.0,
+                     l1_ratio: float = 0.0) -> dict:
+    """Fit one Cox model on df_train, evaluate on df_test.
+
+    Returns model-level stats (train_c, test_c, n_train, n_test,
+    n_events_train, n_events_test, converged) plus a "covariates" DataFrame
+    (coef, hr, hr_ci_low, hr_ci_high, p) indexed by covariate name.
+
+    On fit failure, C-indices and all covariate fields are NaN rather than 0 —
+    a non-convergent fold is missing data, not evidence of a bad model.
+    """
+    base = {
+        "n_train": len(df_train), "n_test": len(df_test),
+        "n_events_train": int(df_train[EVENT_COL].sum()),
+        "n_events_test": int(df_test[EVENT_COL].sum()),
+    }
+    try:
+        cph = CoxPHFitter(penalizer=penalizer, l1_ratio=l1_ratio)
+        cph.fit(df_train[[DURATION_COL, EVENT_COL] + covariates],
+                duration_col=DURATION_COL, event_col=EVENT_COL)
+        test_c = concordance_index(
+            df_test[DURATION_COL], -cph.predict_partial_hazard(df_test), df_test[EVENT_COL]
+        )
+        cov = cph.summary[["coef", "exp(coef)", "exp(coef) lower 95%", "exp(coef) upper 95%", "p"]].copy()
+        cov.columns = ["coef", "hr", "hr_ci_low", "hr_ci_high", "p"]
+        return {**base, "train_c": cph.concordance_index_, "test_c": test_c,
+                "converged": True, "covariates": cov}
+    except Exception as e:
+        logger.warning("  fit failed for %s: %s", covariates, e)
+        cov = pd.DataFrame(
+            {"coef": np.nan, "hr": np.nan, "hr_ci_low": np.nan, "hr_ci_high": np.nan, "p": np.nan},
+            index=covariates,
+        )
+        return {**base, "train_c": np.nan, "test_c": np.nan,
+                "converged": False, "covariates": cov}
+
+
+def _cv_compare_models(df: pd.DataFrame, z_cols: list[str], n_splits: int = N_SPLITS,
+                        seed: int = Config.random_seed) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Stratified k-fold CV comparing 'clinical' vs 'clinical+latent' models.
+
+    The same fold indices are reused for both models, so every fold yields a
+    paired (clinical_test_c, clinical+latent_test_c) observation.
+    """
+    models = {
+        "clinical":        CLINICAL_COLS,
+        "clinical+latent": CLINICAL_COLS + z_cols,
+    }
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    strat_key = _strat_key(df)
+
+    model_rows, covariate_rows = [], []
+    for fold_id, (train_idx, test_idx) in enumerate(skf.split(df, strat_key)):
+        df_train, df_test = df.iloc[train_idx], df.iloc[test_idx]
+        for name, covariates in models.items():
+            result = _fit_fold_model(df_train, df_test, covariates)
+            model_rows.append({
+                "fold": fold_id, "model": name,
+                "train_c": result["train_c"], "test_c": result["test_c"],
+                "n_train": result["n_train"], "n_test": result["n_test"],
+                "n_events_train": result["n_events_train"],
+                "n_events_test": result["n_events_test"],
+                "converged": result["converged"],
+            })
+            for covariate, row in result["covariates"].iterrows():
+                covariate_rows.append({
+                    "fold": fold_id, "model": name, "covariate": covariate,
+                    "coef": row["coef"], "hr": row["hr"],
+                    "hr_ci_low": row["hr_ci_low"], "hr_ci_high": row["hr_ci_high"],
+                    "p": row["p"],
+                })
+
+    return pd.DataFrame(model_rows), pd.DataFrame(covariate_rows)
+
+
+def _summarize_covariates(covariate_folds: pd.DataFrame) -> pd.DataFrame:
+    """Per (model, covariate): mean HR, mean p, and fraction of folds with p<0.05.
+
+    p-values are never averaged for significance claims — frac_folds_p_lt_05
+    (how often this covariate was significant across folds) is the reported
+    stability metric; mean_p/mean_hr are included as descriptive summaries.
+    """
+    valid = covariate_folds.dropna(subset=["p"])
+    summary = valid.groupby(["model", "covariate"], sort=False).agg(
+        mean_hr=("hr", "mean"),
+        median_hr=("hr", "median"),
+        mean_p=("p", "mean"),
+        n_folds_converged=("p", "size"),
+    ).reset_index()
+    frac_sig = (
+        valid.assign(sig=valid["p"] < 0.05)
+        .groupby(["model", "covariate"], sort=False)["sig"].mean()
+        .reset_index(name="frac_folds_p_lt_05")
+    )
+    return summary.merge(frac_sig, on=["model", "covariate"])
+
+
 def main():
     cfg    = Config()
     device = cfg.device
 
     stats  = load_preprocessing_stats(str(Path(cfg.jsons_dir) / "preprocessing_stats.json"))
     splits = load_splits(cfg.splits_dir)
-
-    train_val_ids = splits["train"] + splits["val"]
-    test_ids      = splits["test"]
-    all_ids       = train_val_ids + test_ids
-
-    # unpadded set for df filtering after merge
-    train_val_set = {unpad_ucsf_ids(s) if "UCSF" in s else s for s in train_val_ids}
+    all_ids = splits["train"] + splits["val"] + splits["test"]
 
     with open(Path(cfg.jsons_dir) / "id_to_cohort.json") as f:
         id_to_cohort = json.load(f)
 
     clinical = pd.read_csv(cfg.clinical_csv)
-    out_dir = Path(cfg.jsons_dir)
+    out_dir = Path(cfg.jsons_dir) / "cox_results"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    summaries_dir = out_dir / "cox_summaries"
-    summaries_dir.mkdir(parents=True, exist_ok=True)
-
-    results = {}
+    model_comparison = {}
     for dim in LATENT_DIMS:
         run_cfg = Config()
         run_cfg.latent_dim       = dim
@@ -130,57 +229,30 @@ def main():
             continue
 
         df, z_cols = _build_df(codes, ids, clinical, dim)
-        train_val_df = df[ df["id"].isin(train_val_set)]
-        test_df      = df[~df["id"].isin(train_val_set)]
-        logger.info("  train+val n=%d  test n=%d", len(train_val_df), len(test_df))
+        logger.info("  n=%d subjects (all AE splits pooled), %d-fold CV", len(df), N_SPLITS)
 
-        models = {
-            "clinical":        CLINICAL_COLS,
-            "latent":          z_cols,
-            "clinical+latent": CLINICAL_COLS + z_cols,
-        }
+        model_folds, covariate_folds = _cv_compare_models(df, z_cols)
+        covariate_summary = _summarize_covariates(covariate_folds)
 
-        summaries = []
-        dim_results = {}
-        for name, covariates in models.items():
-            cph = CoxPHFitter()
-            cph.fit(train_val_df[[DURATION_COL, EVENT_COL] + covariates],
-                    duration_col=DURATION_COL, event_col=EVENT_COL)
-            summary = cph.summary.copy()
-            summary.insert(0, "model", name)
-            summaries.append(summary)
-            logger.info("  %-20s  C=%.4f", name, c)
-            dim_results[name] = round(c, 4)
+        model_folds.to_csv(out_dir / f"latent{dim}_model_folds.csv", index=False)
+        covariate_folds.to_csv(out_dir / f"latent{dim}_covariate_folds.csv", index=False)
+        covariate_summary.to_csv(out_dir / f"latent{dim}_covariate_summary.csv", index=False)
 
-        results[f"latent{dim}"] = dim_results
-        pd.concat(summaries).to_csv(summaries_dir / f"latent{dim}.csv")
+        dim_summary = {}
+        for name, g in model_folds.groupby("model"):
+            dim_summary[name] = {
+                "train_c_mean": g["train_c"].mean(), "train_c_std": g["train_c"].std(),
+                "test_c_mean":  g["test_c"].mean(),  "test_c_std":  g["test_c"].std(),
+            }
+            logger.info(
+                "  %-16s  train_C=%.4f±%.4f  test_C=%.4f±%.4f", name,
+                dim_summary[name]["train_c_mean"], dim_summary[name]["train_c_std"],
+                dim_summary[name]["test_c_mean"], dim_summary[name]["test_c_std"],
+            )
+        model_comparison[f"latent{dim}"] = dim_summary
 
-    # # Table
-    # print(f"\n{'':12} {'clinical':>10} {'latent':>10} {'clin+latent':>12}")
-    # print("-" * 46)
-    # for tag, m in results.items():
-    #     print(f"{tag:<12} {m['clinical']:>10.4f} {m['latent']:>10.4f} {m['clinical+latent']:>12.4f}")
-
-    # (out_dir / "cox_comparison.json").write_text(json.dumps(results, indent=2))
-
-    # # Plot
-    # dims = [int(k.replace("latent", "")) for k in results]
-    # fig, ax = plt.subplots(figsize=(6, 4))
-    # for name in ("clinical", "latent", "clinical+latent"):
-    #     ax.plot(dims, [results[f"latent{d}"][name] for d in dims], marker="o", label=name)
-    # ax.axhline(0.5, color="grey", linestyle="--", linewidth=0.8, label="random")
-    # ax.set_xscale("log", base=2)
-    # ax.set_xticks(dims)
-    # ax.set_xticklabels(dims)
-    # ax.set_xlabel("Latent dimension")
-    # ax.set_ylabel("C-index (test set)")
-    # ax.set_title("Cox concordance vs latent dimension")
-    # ax.legend()
-    # fig.tight_layout()
-    # fig_path = out_dir / "cox_comparison.png"
-    # fig.savefig(fig_path, dpi=150)
-    # plt.close(fig)
-    # logger.info("Saved -> %s and %s", out_dir / "cox_comparison.json", fig_path)
+    (out_dir / "model_comparison.json").write_text(json.dumps(model_comparison, indent=2))
+    logger.info("Saved -> %s", out_dir / "model_comparison.json")
 
 
 if __name__ == "__main__":
