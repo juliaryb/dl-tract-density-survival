@@ -5,6 +5,11 @@ __init__.py
 # *.json
 *.png
 dl-tract-density-survival.code-workspace
+config.py
+CLAUDE.md
+export_latent_codes.ipynb
+FENS*
+results-*
 
 # folders
 .venv
@@ -12,6 +17,7 @@ __pycache__
 modelss
 wandb
 checkpoints
+
 # splits
 logs
 jsons

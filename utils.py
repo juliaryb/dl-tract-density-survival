@@ -60,14 +60,14 @@ def pad_ucsf_ids(ids: list[str]) -> list[str]:
         fixed.append("-".join(parts))
     return fixed
 
-def unpad_ucsf_ids(id: list[str]) -> list[str]:
-    """Strip leading zeros from the numeric suffix of UCSF IDs."""
-    parts = id.split("-")                                                                    
-    parts[-1] = str(parts[-1][1:])                                                                    
+def unpad_ucsf_ids(id: str) -> str:
+    """Strip leading zeros from the numeric suffix of a UCSF ID."""
+    parts = id.split("-")
+    parts[-1] = str(parts[-1][1:])
     return "-".join(parts)
 
 def build_id_to_cohort(patient_ids: dict[str, list[str]]) -> dict[str, str]:
-      return {sid: cohort for cohort, ids in patient_ids.items() for sid in ids}
+    return {sid: cohort for cohort, ids in patient_ids.items() for sid in ids}
 
 def regrid_map(
     subject: str,
@@ -79,21 +79,8 @@ def regrid_map(
     voxel_res: float,
     nthreads: int,
 ) -> str:
-    """
-    Ensure a regridded TDMap exists for a subject, creating it via mrgrid if needed.
-
-    The regridded file is cached next to the original map so this is a
-    one-time cost per subject. Subsequent calls simply return the cached path.
-
-    Returns
-    -------
-    str : Absolute path to the (possibly newly created) regridded file.
-
-    Raises
-    ------
-    FileNotFoundError : If the original (pre-regrid) map does not exist.
-    RuntimeError      : If mrgrid exits with a non-zero return code.
-    """
+    """Ensure a regridded TDMap exists for a subject, creating it via mrgrid if needed.
+    Cached next to the original map, so this is a one-time cost per subject."""
     maps_dir = Path(root) / data_dir / subject / "maps"
 
     regridded = maps_dir / f"{subject}_tissue-{tissue}_{tdmap}_voxel-{voxel_res}.nii.gz"
@@ -192,36 +179,16 @@ class CachedTDMapDataset(Dataset):
 
 
 class TDMapDataset(Dataset):
-    """
-    PyTorch Dataset for 3D Tract Density Maps.
+    """PyTorch Dataset for 3D Tract Density Maps, (1, D, H, W).
 
-    Each item is a float32 tensor of shape (1, D, H, W) where:
-      - Channel dim = 1 (grayscale volume, ready for 3-D CNNs / ViTs)
-      - D, H, W are determined by the MNI template at the chosen voxel_res
+    Regridding is lazy: first access shells out to mrgrid and caches the result to
+    disk; later accesses just read the cached file. Negative voxel values
+    (interpolation artefacts) are clamped to zero on load.
 
-    Negative voxel values (numerical artefacts from interpolation) are clamped
-    to zero on load.
+    normalisation: "none" (clamp only) | "log1p" | "zscore" (needs norm_mean/std) |
+    "log1p_zscore" (log1p then z-score, needs norm_mean/std).
 
-    Regridding is lazy: the first time a subject's map is accessed it is
-    regridded via mrgrid and the result is cached on disk.  All subsequent
-    accesses load the cached file directly — no reprocessing occurs.
-
-    Parameters
-    ----------
-    bbox          : Bounding box dict from compute_bounding_box(). If provided,
-                    volumes are cropped to the brain mask extent before returning.
-    padded_shape  : (D, H, W) tuple from bbox_to_padded_shape(). If provided,
-                    cropped volumes are zero-padded to this size. Requires bbox.
-    normalisation : One of: "none" | "log1p" | "zscore" | "log1p_zscore".
-                    "none"         — clamp only, no further transforms.
-                    "log1p"        — apply log1p.
-                    "zscore"       — z-score on raw values; requires norm_mean/norm_std.
-                    "log1p_zscore" — log1p then z-score; requires norm_mean/norm_std.
-    norm_mean     : Required when normalisation is "zscore" or "log1p_zscore".
-    norm_std      : Required when normalisation is "zscore" or "log1p_zscore".
-
-    Preprocessing pipeline (when all optional params are supplied):
-        load → clamp(0) → crop to bbox → pad to padded_shape → [normalisation]
+    Pipeline when bbox/padded_shape are given: load -> clamp(0) -> crop -> pad -> [normalisation].
     """
 
     def __init__(
@@ -305,6 +272,9 @@ class TDMapDataset(Dataset):
 
         # if self.brain_mask is not None:
         # vol = vol * self.brain_mask # NOTE: This doesn't work when there's z-scoring because then some values are negative and the images get super weird
+        # TODO: brain_mask is accepted/stored but unused everywhere right now. Intent was to
+        # restrict volumes (or norm stats) to within-brain voxels only — revisit before
+        # writing up the pipeline.
         return _apply_normalisation(vol, self.normalisation, self.norm_mean, self.norm_std)
 
     # ------------------------------------------------------------------
@@ -322,16 +292,9 @@ class TDMapDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 def compute_bounding_box(mask_path: str) -> dict[str, int]:
-    """
-    Compute the tight bounding box of non-zero voxels in the brain mask.
-
-    Since all subjects are registered to the same MNI template, this box
-    is computed once from the template mask and applied to all subjects.
-
-    Returns
-    -------
-    dict with keys z_min, z_max, y_min, y_max, x_min, x_max (exclusive upper bounds).
-    """
+    """Tight bounding box of non-zero voxels in the brain mask. Computed once from
+    the template mask (all subjects share registration) and applied to everyone.
+    Returns dict with z_min/z_max/y_min/y_max/x_min/x_max (upper bounds exclusive)."""
     mask = nib.load(mask_path).get_fdata()
     coords = np.argwhere(mask > 0)
     lo = coords.min(axis=0)
@@ -347,13 +310,8 @@ def bbox_to_padded_shape(
     bbox: dict[str, int],
     multiple: int = 16,
 ) -> tuple[int, int, int]:
-    """
-    Compute (D, H, W) padded to the next multiple of `multiple`.
-    
-    (For stride=2) set multiple = 2**len(encoder_channels) so spatial dims downsample
-    and upsample evenly through the encoder-decoder stack.
-
-    """
+    """(D, H, W) padded to the next multiple of `multiple` (default 16 = 2**4,
+    matching the encoder's 4 stride-2 layers in model.py)."""
     raw_d = bbox["z_max"] - bbox["z_min"]
     raw_h = bbox["y_max"] - bbox["y_min"]
     raw_w = bbox["x_max"] - bbox["x_min"]
@@ -362,12 +320,8 @@ def bbox_to_padded_shape(
 
 
 def compute_normalisation_stats(dataset: Dataset, mask: torch.Tensor | None = None) -> dict[str, float]:
-    """
-    Compute mean and std over voxels in the dataset.
-      
-    mask : Brain mask tensor (1, D, H, W). If provided, only masked voxels
-            contribute — excludes padding zeros and background voxels.
-    """
+    """Compute mean/std over dataset voxels. If mask is given, only masked voxels
+    contribute (excludes padding/background)."""
     total_sum, total_sq_sum, total_count = 0.0, 0.0, 0
 
     for i in range(len(dataset)):
@@ -391,13 +345,8 @@ def load_brain_mask(
     bbox: dict[str, int],
     padded_shape: tuple[int, int, int],
 ) -> torch.Tensor:
-    """
-    Load brain mask, apply the same crop + pad as TDMapDataset.
-
-    Returns
-    -------
-    Float32 tensor of shape (1, D, H, W) with values 0 or 1.
-    """
+    """Load brain mask, apply the same crop + pad as TDMapDataset.
+    Returns (1, D, H, W) float32, values 0/1."""
     mask = nib.load(mask_path).get_fdata()
     mask = (mask > 0.5).astype(np.float32)
     mask = torch.from_numpy(mask).unsqueeze(0)  # (1, D, H, W)
@@ -459,25 +408,12 @@ def build_dataset_from_ids(
     brain_mask: torch.Tensor | None = None,
     cache_dir: str | None = None,
 ) -> Dataset:
-    """
-    Build a dataset from a flat list of subject IDs spanning multiple cohorts.
+    """Build a dataset from subject IDs spanning multiple cohorts.
 
-    If cache_dir is provided and exists, returns a CachedTDMapDataset (fast,
-    reads pre-cached float16 tensors from preprocess_and_cache.py). Otherwise
-    falls back to TDMapDataset (reads NIfTI files via nibabel).
-
-    Parameters
-    ----------
-    sids         : Flat list of subject ID strings (may span any cohort).
-    id_to_cohort : {subject_id: cohort_name} lookup built from patient_ids.
-    cfg          : Config instance supplying paths and data parameters.
-    bbox         : Bounding box from compute_bounding_box(). Optional crop.
-    padded_shape : Target shape from bbox_to_padded_shape(). Requires bbox.
-    norm_mean    : Z-score mean. Required when normalisation is "zscore" or "log1p_zscore".
-    norm_std     : Z-score std. Required when normalisation is "zscore" or "log1p_zscore".
-    normalisation: One of "none" | "log1p" | "zscore" | "log1p_zscore".
-    brain_mask   : If passed, normalisation is done within the brain mask (TDMapDataset only).
-    cache_dir    : Path to directory of pre-cached .pt tensors. If set, uses CachedTDMapDataset.
+    Uses CachedTDMapDataset if cache_dir is given (pre-cached tensors from
+    preprocess_and_cache.py), otherwise TDMapDataset (reads NIfTI directly).
+    brain_mask is accepted but not currently applied anywhere — see the TODO
+    in TDMapDataset.__getitem__.
     """
     if cache_dir is not None:
         return CachedTDMapDataset(
@@ -527,38 +463,25 @@ def split_ids(
     val_fraction: float = 0.15,
     seed: int = 42,
 ) -> dict[str, list[str]]:
-    """
-    Split subject IDs into train / val / test sets.
+    """Split subject IDs into train/val/test at the patient level (same
+    subject never appears in more than one split).
 
-    Two strategies are supported:
-
-    "cohort_holdout"  (default)
-        Entire cohorts are reserved as the test set.
-        Requires 'test_cohorts' to be specified.
-
-        Example: test_cohorts=["rhuh", "tcga"] holds out the two smaller
-        cohorts entirely; UCSF + UPENN are split into train / val.
-
-    "stratified"
-        A fixed percentage is sampled from each cohort for test, then
-        another percentage for val, and the rest goes to train.
-
-    In both cases the split is performed at the patient-ID level — the
-    same subject never appears in more than one split.
+    "cohort_holdout": test_cohorts held out entirely; rest split into train/val.
+    "stratified": test_fraction then val_fraction sampled from each cohort.
 
     Parameters
     ----------
-    patient_ids    : {cohort_name: [subject_id, ...]} mapping.
-    strategy       : "cohort_holdout" or "stratified".
-    test_cohorts   : Cohort names to hold out entirely (cohort_holdout only).
-    test_fraction  : Fraction of each cohort reserved for test (stratified only).
-    val_fraction   : Fraction of the remaining pool reserved for validation.
-    seed           : Random seed for reproducibility. 
+    patient_ids   : {cohort_name: [subject_id, ...]}
+    strategy      : "cohort_holdout" or "stratified"
+    test_cohorts  : held out entirely (cohort_holdout only)
+    test_fraction : per-cohort test share (stratified only)
+    val_fraction  : share of remaining pool for validation
+    seed          : RNG seed
     # TODO: check if anything should be changed for reproducibility
 
     Returns
     -------
-    dict with keys "train", "val", "test", each a list of subject ID strings.
+    {"train": [subject_id, ...], "val": [...], "test": [...]}
     """
     rng = np.random.default_rng(seed)
 
@@ -600,14 +523,7 @@ def split_ids(
 
 
 def save_splits(splits: dict[str, list[str]], output_dir: str) -> None:
-    """
-    Persist the train/val/test ID lists as plain-text files for reproducibility.
-
-    Parameters
-    ----------
-    splits     : Output of `split_ids`.
-    output_dir : Directory where the .txt files are written.
-    """
+    """Persist the train/val/test ID lists (output of split_ids) as plain-text files."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     for split_name, ids in splits.items():
@@ -615,16 +531,10 @@ def save_splits(splits: dict[str, list[str]], output_dir: str) -> None:
         path.write_text("\n".join(ids))
         logger.info("Saved %d IDs -> %s", len(ids), path)
 
-def load_splits(output_dir: str) -> dict[str, list[str]]:                                                  
-      """                                                                                                    
-      Load train/val/test ID lists saved by save_splits.                                                     
-                                                                                                             
-      Parameters  
-      ----------                                                                                             
-      output_dir : Directory written to by save_splits.
-      """
-      output_dir = Path(output_dir)
-      return {
-          path.stem.removesuffix("_ids"): path.read_text().splitlines()                                      
-          for path in sorted(output_dir.glob("*_ids.txt"))
-      }         
+def load_splits(output_dir: str) -> dict[str, list[str]]:
+    """Load train/val/test ID lists saved by save_splits."""
+    output_dir = Path(output_dir)
+    return {
+        path.stem.removesuffix("_ids"): path.read_text().splitlines()
+        for path in sorted(output_dir.glob("*_ids.txt"))
+    }

@@ -133,19 +133,6 @@ def main():
     history_path.parent.mkdir(parents=True, exist_ok=True)
     json.dump(history, open(history_path, "w"))
 
-    # model.load_state_dict(torch.load(save_path, map_location=device))
-
-    # codes_dir = Path(cfg.latent_codes_dir(latent_dim))
-    # codes_dir.mkdir(parents=True, exist_ok=True)
-
-    # for split_name, ids in [("train", train_ids), ("val", val_ids),
-    #                         ("test", test_ids), ("all", all_ids)]:
-    #     loader = make_loader(ids, shuffle=False, **loader_kwargs)
-    #     codes  = encode_dataset(model, loader, device).numpy()
-    #     np.save(codes_dir / f"{split_name}.npy",     codes)
-    #     np.save(codes_dir / f"{split_name}_ids.npy", np.array(ids))
-    #     logger.info("Saved %s codes: %s", split_name, codes.shape)
-
     wandb.finish()
 
 if __name__ == "__main__":
