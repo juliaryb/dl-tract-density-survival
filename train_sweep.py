@@ -24,10 +24,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-def make_loader(ids, id_to_cohort, cfg, bbox, padded_shape, norm_mean, norm_std, shuffle, cache_dir=None):
+def make_loader(ids, id_to_cohort, cfg, bbox, padded_shape, norm_mean, norm_std, shuffle,
+                 norm_min=None, norm_max=None, cache_dir=None):
     ds = build_dataset_from_ids(
-        ids, id_to_cohort, cfg, bbox, padded_shape,
-        norm_mean, norm_std, cfg.normalisation, cache_dir=cache_dir,
+        ids, id_to_cohort, cfg, bbox=bbox, padded_shape=padded_shape,
+        norm_mean=norm_mean, norm_std=norm_std, norm_min=norm_min, norm_max=norm_max,
+        normalisation=cfg.normalisation, cache_dir=cache_dir,
     )
     return torch.utils.data.DataLoader(
         ds, batch_size=cfg.batch_size, shuffle=shuffle,
@@ -39,7 +41,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--latent-dim", type=int, required=True)
     parser.add_argument("--normalisation", default=None,
-                        choices=["none", "log1p", "zscore", "log1p_zscore"],
+                        choices=["none", "log1p", "zscore", "log1p_zscore", "minmax"],
                         help="Override cfg.normalisation")
     parser.add_argument("--no-lr-scheduler", action="store_true",
                         help="Disable cosine annealing (flat LR)")
@@ -66,6 +68,7 @@ def main():
     # Select normalisation stats appropriate for the chosen normalisation type.
     # log1p_zscore needs stats computed on log1p-transformed values (written by
     # preprocess_and_cache.py). Falls back to raw stats with a warning if not found.
+    norm_min = norm_max = None
     if cfg.normalisation == "zscore":
         norm_mean, norm_std = stats["norm_mean"], stats["norm_std"]
     elif cfg.normalisation == "log1p_zscore":
@@ -77,6 +80,9 @@ def main():
                 "run preprocess_and_cache.py first. Falling back to raw stats."
             )
             norm_mean, norm_std = stats["norm_mean"], stats["norm_std"]
+    elif cfg.normalisation == "minmax":
+        norm_mean = norm_std = None
+        norm_min, norm_max = stats["norm_min"], stats["norm_max"]
     else:
         norm_mean = norm_std = None
 
@@ -95,7 +101,7 @@ def main():
 
     loader_kwargs = dict(id_to_cohort=id_to_cohort, cfg=cfg, bbox=bbox,
                          padded_shape=padded_shape, norm_mean=norm_mean, norm_std=norm_std,
-                         cache_dir=cache_dir)
+                         norm_min=norm_min, norm_max=norm_max, cache_dir=cache_dir)
 
     train_loader = make_loader(train_ids, shuffle=True,  **loader_kwargs)
     val_loader   = make_loader(val_ids,   shuffle=False, **loader_kwargs)

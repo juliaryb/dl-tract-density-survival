@@ -13,21 +13,25 @@ from model import Autoencoder
 logger = logging.getLogger(__name__)
 
 
-def _apply_norm(vol: torch.Tensor, normalisation: str, mean, std) -> torch.Tensor:
+def _apply_norm(vol: torch.Tensor, normalisation: str, mean, std, vmin=None, vmax=None) -> torch.Tensor:
     if normalisation in ("log1p", "log1p_zscore"):
         vol = torch.log1p(vol)
     if normalisation in ("zscore", "log1p_zscore"):
         vol = (vol - mean) / (std + 1e-8)
+    if normalisation == "minmax":
+        vol = (vol - vmin) / (vmax - vmin + 1e-8)
     return vol
 
 
-def _denormalize(recon: torch.Tensor, normalisation: str, mean, std) -> torch.Tensor:
+def _denormalize(recon: torch.Tensor, normalisation: str, mean, std, vmin=None, vmax=None) -> torch.Tensor:
     if normalisation == "zscore":
         return recon * std + mean
     if normalisation == "log1p":
         return torch.expm1(recon)
     if normalisation == "log1p_zscore":
         return torch.expm1(recon * std + mean)
+    if normalisation == "minmax":
+        return recon * (vmax - vmin) + vmin
     return recon  # "none"
 
 
@@ -64,20 +68,22 @@ def evaluate_model(cfg: Config, raw_dataset, stats: dict, device: torch.device) 
     model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
     model.eval()
 
-    norm_mean = norm_std = None
+    norm_mean = norm_std = norm_min = norm_max = None
     if cfg.normalisation == "zscore":
         norm_mean, norm_std = stats["norm_mean"], stats["norm_std"]
     elif cfg.normalisation == "log1p_zscore":
         norm_mean, norm_std = stats["log1p_norm_mean"], stats["log1p_norm_std"]
+    elif cfg.normalisation == "minmax":
+        norm_min, norm_max = stats["norm_min"], stats["norm_max"]
 
     per_subject = []
     with torch.no_grad():
         for i in range(len(raw_dataset)):
             raw_vol = raw_dataset[i]
-            norm_vol = _apply_norm(raw_vol.clone(), cfg.normalisation, norm_mean, norm_std)
+            norm_vol = _apply_norm(raw_vol.clone(), cfg.normalisation, norm_mean, norm_std, norm_min, norm_max)
             recon_norm = model(norm_vol.unsqueeze(0).to(device))[0].squeeze(0).cpu()
             recon_raw = torch.clamp(
-                _denormalize(recon_norm, cfg.normalisation, norm_mean, norm_std), min=0.0
+                _denormalize(recon_norm, cfg.normalisation, norm_mean, norm_std, norm_min, norm_max), min=0.0
             )
             per_subject.append(subject_metrics(raw_vol, recon_raw))
 

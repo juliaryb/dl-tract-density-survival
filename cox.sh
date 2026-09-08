@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
-#SBATCH -t 01:00:00
+#SBATCH -t 00:15:00
 #SBATCH -o logs/cox_%j.out
 #SBATCH -e logs/cox_%j.err
 

@@ -116,7 +116,7 @@ def regrid_map(
 # Dataset
 # ---------------------------------------------------------------------------
 
-_VALID_NORMALISATIONS = {"none", "log1p", "zscore", "log1p_zscore"}
+_VALID_NORMALISATIONS = {"none", "log1p", "zscore", "log1p_zscore", "minmax"}
 
 
 def _apply_normalisation(
@@ -124,12 +124,16 @@ def _apply_normalisation(
     normalisation: str,
     norm_mean: float | None,
     norm_std: float | None,
+    norm_min: float | None = None,
+    norm_max: float | None = None,
 ) -> torch.Tensor:
-    """Apply log1p and/or z-score normalisation to a volume tensor in-place order."""
+    """Apply log1p, z-score, and/or min-max normalisation to a volume tensor."""
     if normalisation in ("log1p", "log1p_zscore"):
         vol = torch.log1p(vol)
     if normalisation in ("zscore", "log1p_zscore"):
         vol = (vol - norm_mean) / (norm_std + 1e-8)
+    if normalisation == "minmax":
+        vol = (vol - norm_min) / (norm_max - norm_min + 1e-8)
     return vol
 
 
@@ -146,6 +150,8 @@ class CachedTDMapDataset(Dataset):
     normalisation : Same options as TDMapDataset.
     norm_mean     : Required for "zscore" / "log1p_zscore".
     norm_std      : Required for "zscore" / "log1p_zscore".
+    norm_min      : Required for "minmax".
+    norm_max      : Required for "minmax".
     """
 
     def __init__(
@@ -155,17 +161,23 @@ class CachedTDMapDataset(Dataset):
         normalisation: str = "zscore",
         norm_mean: float | None = None,
         norm_std: float | None = None,
+        norm_min: float | None = None,
+        norm_max: float | None = None,
     ) -> None:
         if normalisation not in _VALID_NORMALISATIONS:
             raise ValueError(f"normalisation must be one of {_VALID_NORMALISATIONS}, got {normalisation!r}")
         if normalisation in ("zscore", "log1p_zscore") and (norm_mean is None or norm_std is None):
             raise ValueError(f"norm_mean and norm_std are required when normalisation={normalisation!r}")
+        if normalisation == "minmax" and (norm_min is None or norm_max is None):
+            raise ValueError("norm_min and norm_max are required when normalisation='minmax'")
 
         self.subjects = list(subjects)
         self.cache_dir = Path(cache_dir)
         self.normalisation = normalisation
         self.norm_mean = norm_mean
         self.norm_std = norm_std
+        self.norm_min = norm_min
+        self.norm_max = norm_max
 
     def __len__(self) -> int:
         return len(self.subjects)
@@ -175,7 +187,9 @@ class CachedTDMapDataset(Dataset):
         vol = torch.load(
             self.cache_dir / f"{self.subjects[idx]}.pt", weights_only=True
         ).to(torch.float32)
-        return _apply_normalisation(vol, self.normalisation, self.norm_mean, self.norm_std)
+        return _apply_normalisation(
+            vol, self.normalisation, self.norm_mean, self.norm_std, self.norm_min, self.norm_max
+        )
 
 
 class TDMapDataset(Dataset):
@@ -207,6 +221,8 @@ class TDMapDataset(Dataset):
         normalisation: str = "log1p_zscore",
         norm_mean: float | None = None,
         norm_std: float | None = None,
+        norm_min: float | None = None,
+        norm_max: float | None = None,
         brain_mask: torch.Tensor | None = None
     ) -> None:
 
@@ -214,6 +230,8 @@ class TDMapDataset(Dataset):
             raise ValueError(f"normalisation must be one of {_VALID_NORMALISATIONS}, got {normalisation!r}")
         if normalisation in ("zscore", "log1p_zscore") and (norm_mean is None or norm_std is None):
             raise ValueError(f"norm_mean and norm_std are required when normalisation={normalisation!r}")
+        if normalisation == "minmax" and (norm_min is None or norm_max is None):
+            raise ValueError("norm_min and norm_max are required when normalisation='minmax'")
 
         self.subjects = list(subjects)
         self.template = template
@@ -229,6 +247,8 @@ class TDMapDataset(Dataset):
         self.normalisation = normalisation
         self.norm_mean = norm_mean
         self.norm_std = norm_std
+        self.norm_min = norm_min
+        self.norm_max = norm_max
         self.brain_mask = brain_mask
 
     # ------------------------------------------------------------------
@@ -275,7 +295,9 @@ class TDMapDataset(Dataset):
         # TODO: brain_mask is accepted/stored but unused everywhere right now. Intent was to
         # restrict volumes (or norm stats) to within-brain voxels only — revisit before
         # writing up the pipeline.
-        return _apply_normalisation(vol, self.normalisation, self.norm_mean, self.norm_std)
+        return _apply_normalisation(
+            vol, self.normalisation, self.norm_mean, self.norm_std, self.norm_min, self.norm_max
+        )
 
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
@@ -320,9 +342,10 @@ def bbox_to_padded_shape(
 
 
 def compute_normalisation_stats(dataset: Dataset, mask: torch.Tensor | None = None) -> dict[str, float]:
-    """Compute mean/std over dataset voxels. If mask is given, only masked voxels
-    contribute (excludes padding/background)."""
+    """Compute mean/std/min/max over dataset voxels. If mask is given, only masked
+    voxels contribute (excludes padding/background)."""
     total_sum, total_sq_sum, total_count = 0.0, 0.0, 0
+    running_min, running_max = float("inf"), float("-inf")
 
     for i in range(len(dataset)):
         vol = dataset[i].float()
@@ -331,12 +354,17 @@ def compute_normalisation_stats(dataset: Dataset, mask: torch.Tensor | None = No
         total_sum    += flat.sum().item()
         total_sq_sum += flat.pow(2).sum().item()
         total_count  += flat.numel()
+        running_min   = min(running_min, flat.min().item())
+        running_max   = max(running_max, flat.max().item())
 
     mean = total_sum / total_count
     std  = math.sqrt(max(total_sq_sum / total_count - mean ** 2, 0.0)) # computational std formula using expectation values
-    logger.info("Normalisation stats — mean: %.4f  std: %.4f  (n_voxels: %d)", mean, std, total_count)
+    logger.info(
+        "Normalisation stats — mean: %.4f  std: %.4f  min: %.4f  max: %.4f  (n_voxels: %d)",
+        mean, std, running_min, running_max, total_count,
+    )
 
-    return {"mean": float(mean), "std": float(std)}
+    return {"mean": float(mean), "std": float(std), "min": float(running_min), "max": float(running_max)}
 
 
 
@@ -404,6 +432,8 @@ def build_dataset_from_ids(
     padded_shape: tuple[int, int, int] | None = None,
     norm_mean: float | None = None,
     norm_std: float | None = None,
+    norm_min: float | None = None,
+    norm_max: float | None = None,
     normalisation: str = "log1p_zscore",
     brain_mask: torch.Tensor | None = None,
     cache_dir: str | None = None,
@@ -422,6 +452,8 @@ def build_dataset_from_ids(
             normalisation=normalisation,
             norm_mean=norm_mean,
             norm_std=norm_std,
+            norm_min=norm_min,
+            norm_max=norm_max,
         )
 
     cohort_buckets: dict[str, list[str]] = {c: [] for c in cfg.cohort_dirs}
@@ -446,6 +478,8 @@ def build_dataset_from_ids(
             normalisation=normalisation,
             norm_mean=norm_mean,
             norm_std=norm_std,
+            norm_min=norm_min,
+            norm_max=norm_max,
             brain_mask=brain_mask
         ))
     return ConcatDataset(datasets)

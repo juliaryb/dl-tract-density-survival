@@ -129,7 +129,7 @@ def main() -> None:
 
     brain_mask = load_brain_mask(cfg.brain_mask, bbox, padded_shape)
 
-    logger.info("Computing raw stats (used for 'zscore') ...")
+    logger.info("Computing raw stats (used for 'zscore' / 'minmax') ...")
     raw_ds    = CachedTDMapDataset(train_ids, cache_dir=str(cache_dir), normalisation="none")
     raw_stats = compute_normalisation_stats(raw_ds, brain_mask)
 
@@ -139,13 +139,15 @@ def main() -> None:
 
     stats["norm_mean"]       = raw_stats["mean"]
     stats["norm_std"]        = raw_stats["std"]
+    stats["norm_min"]        = raw_stats["min"]
+    stats["norm_max"]        = raw_stats["max"]
     stats["log1p_norm_mean"] = log1p_stats["mean"]
     stats["log1p_norm_std"]  = log1p_stats["std"]
     stats_path.write_text(json.dumps(stats, indent=2))
     logger.info(
-        "Saved to %s — raw: mean=%.4f std=%.4f | log1p: mean=%.4f std=%.4f",
+        "Saved to %s — raw: mean=%.4f std=%.4f min=%.4f max=%.4f | log1p: mean=%.4f std=%.4f",
         stats_path,
-        raw_stats["mean"], raw_stats["std"],
+        raw_stats["mean"], raw_stats["std"], raw_stats["min"], raw_stats["max"],
         log1p_stats["mean"], log1p_stats["std"],
     )
 

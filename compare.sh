@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
-#SBATCH -t 00:30:00
+#SBATCH -t 00:10:00
 #SBATCH -o logs/baselines/compare_%j.out
 #SBATCH -e logs/baselines/compare_%j.err
 
@@ -17,4 +17,5 @@ module load CUDA/12.8.0
 
 source /net/tscratch/people/plgjuliaryb/envs/dl-tract-density-survival/bin/activate
 
+# python compare.py --mode latent_dims
 python compare.py --mode baselines

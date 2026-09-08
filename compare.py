@@ -31,9 +31,10 @@ _BASELINE_EXPERIMENTS = [
     {"normalisation": "log1p",        "use_lr_scheduler": False},
     {"normalisation": "log1p_zscore", "use_lr_scheduler": True},
     {"normalisation": "log1p_zscore", "use_lr_scheduler": False},
+    {"normalisation": "minmax",       "use_lr_scheduler": True},
 ]
 
-_LATENT_DIMS = [2, 4, 8, 16, 32, 64, 128]
+_LATENT_DIMS = [2, 4, 6, 8, 12, 16, 32, 64, 128]
 
 
 def _print_table(results: dict) -> None:
