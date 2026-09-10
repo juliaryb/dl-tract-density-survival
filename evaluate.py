@@ -9,6 +9,7 @@ from skimage.metrics import structural_similarity
 from scipy.stats import sem
 from config import Config
 from model import Autoencoder
+from utils import load_brain_mask
 
 logger = logging.getLogger(__name__)
 
@@ -35,26 +36,63 @@ def _denormalize(recon: torch.Tensor, normalisation: str, mean, std, vmin=None, 
     return recon  # "none"
 
 
-def subject_metrics(raw_in: torch.Tensor, raw_recon: torch.Tensor) -> dict:
-    """R², MAE, Pearson r, SSIM over all voxels for one volume pair."""
-    inp = raw_in.flatten().numpy()
-    rec = raw_recon.flatten().numpy()
+# Derived from the training split inside the brain mask; the fallback is 
+# the observed global maximum across the full dataset.
+DEFAULT_DATA_RANGE = 927.4595
 
+
+def _pointwise(inp: np.ndarray, rec: np.ndarray) -> dict:
+    """R², MAE, MSE and Pearson r over a flat pair of arrays."""
     ss_res = ((inp - rec) ** 2).sum()
     ss_tot = ((inp - inp.mean()) ** 2).sum()
-    r2 = float(1.0 - ss_res / (ss_tot + 1e-8))
-    mae = float(np.abs(inp - rec).mean())
-    mse = float(((inp - rec) ** 2).mean())
-    r = float(pearsonr(inp, rec)[0])
+    return {
+        "r2": float(1.0 - ss_res / (ss_tot + 1e-8)),
+        "mae": float(np.abs(inp - rec).mean()),
+        "mse": float(((inp - rec) ** 2).mean()),
+        "pearson_r": float(pearsonr(inp, rec)[0]),
+    }
 
-    data_range = float(raw_in.max())
-    ssim = float(structural_similarity(
-        raw_in.squeeze(0).numpy(),
-        raw_recon.squeeze(0).numpy(),
-        data_range=data_range if data_range > 0 else 1.0,
-    ))
 
-    return {"r2": r2, "mae": mae, "mse": mse, "pearson_r": r, "ssim": ssim}
+def subject_metrics(
+    raw_in: torch.Tensor,
+    raw_recon: torch.Tensor,
+    data_range: float = DEFAULT_DATA_RANGE,
+    mask: torch.Tensor | None = None,
+) -> dict:
+    """Reconstruction metrics for one volume pair.
+
+    Returns R², MAE, MSE, Pearson r and SSIM over the whole volume and, when a
+    brain mask is supplied, the same metrics restricted to the masked region of
+    interest (suffix "_roi").
+
+    SSIM uses the parameterisation of Wang et al. (2004) - Gaussian weighting with
+    sigma=1.5 and population covariance - rather than the scikit-image defaults
+    (uniform window, sample covariance), so that the reported values match the
+    conventional definition.
+
+    Because SSIM combines information across neighbouring voxels, a non-rectangular
+    mask cannot be applied to the inputs; the full SSIM map is computed instead and
+    then averaged over in-mask voxels only.
+    """
+    inp3d = raw_in.squeeze(0).numpy()
+    rec3d = raw_recon.squeeze(0).numpy()
+
+    _, ssim_map = structural_similarity(
+        inp3d, rec3d,
+        data_range=data_range,
+        gaussian_weights=True, sigma=1.5, use_sample_covariance=False,
+        full=True,
+    )
+
+    out = _pointwise(inp3d.ravel(), rec3d.ravel())
+    out["ssim"] = float(ssim_map.mean())
+
+    if mask is not None:
+        m = mask.squeeze(0).numpy().astype(bool)
+        out.update({f"{k}_roi": v for k, v in _pointwise(inp3d[m], rec3d[m]).items()})
+        out["ssim_roi"] = float(ssim_map[m].mean())
+
+    return out
 
 
 def evaluate_model(cfg: Config, raw_dataset, stats: dict, device: torch.device) -> list[dict] | None:
@@ -76,6 +114,13 @@ def evaluate_model(cfg: Config, raw_dataset, stats: dict, device: torch.device) 
     elif cfg.normalisation == "minmax":
         norm_min, norm_max = stats["norm_min"], stats["norm_max"]
 
+    # Brain mask for the ROI-restricted metrics, cropped/padded to match volumes.
+    brain_mask = load_brain_mask(cfg.brain_mask, stats["bbox"], stats["padded_shape"])
+
+    # Fixed across all subjects and models - see DEFAULT_DATA_RANGE.
+    data_range = float(stats.get("norm_max") or DEFAULT_DATA_RANGE)
+    logger.info("SSIM data_range=%.4f (fixed across subjects)", data_range)
+
     per_subject = []
     with torch.no_grad():
         for i in range(len(raw_dataset)):
@@ -85,17 +130,23 @@ def evaluate_model(cfg: Config, raw_dataset, stats: dict, device: torch.device) 
             recon_raw = torch.clamp(
                 _denormalize(recon_norm, cfg.normalisation, norm_mean, norm_std, norm_min, norm_max), min=0.0
             )
-            per_subject.append(subject_metrics(raw_vol, recon_raw))
+            per_subject.append(
+                subject_metrics(raw_vol, recon_raw, data_range=data_range, mask=brain_mask)
+            )
 
     return per_subject
 
 
 def summarize(per_subject: list[dict]) -> dict:
-    """Aggregate per-subject metric dicts into mean ± std."""
+    """Aggregate per-subject metric dicts into mean ± standard error.
+
+    Covers whatever metrics are present, including the "_roi" variants.
+    """
+    metrics = per_subject[0].keys() if per_subject else ()
     return {
         metric: {
             "mean": float(np.mean([s[metric] for s in per_subject])),
             "std_err":  float(sem( [s[metric] for s in per_subject])),
         }
-        for metric in ("r2", "mae", "mse", "pearson_r", "ssim")
+        for metric in metrics
     }

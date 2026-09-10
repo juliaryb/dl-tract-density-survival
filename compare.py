@@ -38,9 +38,15 @@ _LATENT_DIMS = [2, 4, 6, 8, 12, 16, 32, 64, 128]
 
 
 def _print_table(results: dict) -> None:
+    """Whole-volume metrics, followed by the same metrics restricted to the brain
+    mask ("_roi")"""
+    def g(m, key):
+        return m[key]["mean"] if key in m else float("nan")
+
     header = (
         f"\n{'Run':<35} {'R²':>7} {'±':>1} {'std_err':>6}"
         f"  {'MAE':>8}  {'Pearson r':>9}  {'SSIM':>7}"
+        f"  |{'R² roi':>8}  {'MAE roi':>9}  {'SSIM roi':>8}"
     )
     print(header)
     print("-" * len(header))
@@ -49,6 +55,7 @@ def _print_table(results: dict) -> None:
             f"{tag:<35} {m['r2']['mean']:>7.4f} ± {m['r2']['std_err']:>6.4f}"
             f"  {m['mae']['mean']:>8.4f}  {m['pearson_r']['mean']:>9.4f}"
             f"  {m['ssim']['mean']:>7.4f}"
+            f"  |{g(m,'r2_roi'):>8.4f}  {g(m,'mae_roi'):>9.4f}  {g(m,'ssim_roi'):>8.4f}"
         )
 
 
