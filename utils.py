@@ -485,6 +485,18 @@ def build_dataset_from_ids(
     return ConcatDataset(datasets)
 
 
+def dataset_subject_ids(dataset: Dataset) -> list[str]:
+    """Subject IDs in the exact order `dataset` yields them.
+
+    build_dataset_from_ids groups subjects into per-cohort TDMapDatasets before
+    concatenating into a list of patient ids. This function must be called before
+    passing samples and codes into other functions (like for latent codes encoding)
+    """
+    if isinstance(dataset, ConcatDataset):
+        return [sid for ds in dataset.datasets for sid in ds.subjects]
+    return list(dataset.subjects)
+
+
 # ---------------------------------------------------------------------------
 # Train / val / test splitting
 # ---------------------------------------------------------------------------

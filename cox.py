@@ -5,7 +5,7 @@ For each latent dim:
   1. Encode all subjects with the trained AE (cached to disk on first run).
   2. Merge with clinical data (all subjects, regardless of AE train/val/test split).
   3. Compare a "clinical" (age, sex) and a "clinical+latent" (age, sex, z1..zN)
-     Cox model via stratified k-fold cross-validation.
+     Cox model via repeated stratified k-fold cross-validation (5 folds x 6 repeats).
 
 Per-fold, per-model outputs (nothing is averaged away):
   jsons/cox_results/latent{dim}_model_folds.csv       — one row per (fold, model)
@@ -15,6 +15,7 @@ Per-fold, per-model outputs (nothing is averaged away):
 """
 import json
 import logging
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -22,13 +23,15 @@ import pandas as pd
 import torch
 from lifelines import CoxPHFitter
 from lifelines.utils import concordance_index
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.preprocessing import StandardScaler
 
 from config import Config
 from model import Autoencoder
 from train import encode_dataset
 from utils import (
-    build_dataset_from_ids, load_preprocessing_stats, load_splits, unpad_ucsf_ids,
+    build_dataset_from_ids, dataset_subject_ids, load_preprocessing_stats,
+    load_splits, unpad_ucsf_ids,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -39,6 +42,7 @@ DURATION_COL     = "OS (days) - corrected"
 EVENT_COL        = "status"
 CLINICAL_COLS    = ["age", "sex"]
 N_SPLITS         = 5
+N_REPEATS        = 6   # 5 folds x 6 repeats = 30 folds, consistent across all survival experiments
 
 
 def _get_or_encode(cfg: Config, all_ids: list[str], id_to_cohort: dict,
@@ -79,12 +83,18 @@ def _get_or_encode(cfg: Config, all_ids: list[str], id_to_cohort: dict,
 
     codes = encode_dataset(model, loader, device).numpy()
 
+    # build_dataset_from_ids uses cohorts ordering, so prepare corresponding list of ids
+    ordered_ids = dataset_subject_ids(dataset)
+    assert len(ordered_ids) == len(codes), (
+        f"{len(ordered_ids)} ids vs {len(codes)} codes — cannot pair them safely"
+    )
+
     codes_dir.mkdir(parents=True, exist_ok=True)
     np.save(codes_path, codes)
-    np.save(ids_path, np.array(all_ids))
+    np.save(ids_path, np.array(ordered_ids))
     logger.info("Encoded %s -> %s", codes.shape, codes_dir)
 
-    return codes, all_ids
+    return codes, ordered_ids
 
 
 def _build_df(codes: np.ndarray, ids: list[str],
@@ -103,17 +113,43 @@ def _strat_key(df: pd.DataFrame) -> pd.Series:
     return df["cohort"].astype(str) + "_" + df[EVENT_COL].astype(str)
 
 
+# "sex" is binary 0/1 and left in native units; everything else is standardised
+UNSCALED_COLS = {"sex"}
+
+def _scale_fold(df_train: pd.DataFrame, df_test: pd.DataFrame,
+                 covariates: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Standardise continuous covariates, fitting the scaler on the training fold only.
+
+    It makes hazard ratios comparable across covariates and consistent with 
+    the regularised experiment, where scaling is required because 
+    the penalty is scale-dependent.
+    """
+    cols = [c for c in covariates if c not in UNSCALED_COLS]
+    if not cols:
+        return df_train, df_test
+
+    scaler = StandardScaler().fit(df_train[cols])
+    df_train, df_test = df_train.copy(), df_test.copy()
+    df_train[cols] = scaler.transform(df_train[cols])
+    df_test[cols] = scaler.transform(df_test[cols])
+    return df_train, df_test
+
+
 def _fit_fold_model(df_train: pd.DataFrame, df_test: pd.DataFrame,
                      covariates: list[str], penalizer: float = 0.0,
                      l1_ratio: float = 0.0) -> dict:
     """Fit one Cox model on df_train, evaluate on df_test.
 
     Returns model-level stats (train_c, test_c, n_train, n_test,
-    n_events_train, n_events_test, converged) plus a "covariates" DataFrame
+    n_events_train, n_events_test, converged, warnings) plus a "covariates" DataFrame
     (coef, hr, hr_ci_low, hr_ci_high, p) indexed by covariate name.
 
-    On fit failure, C-indices and all covariate fields are NaN rather than 0 —
+    On fit failure, C-indices and all covariate fields are NaN rather than 0 -
     a non-convergent fold is missing data, not evidence of a bad model.
+
+    `converged` is False only on a raised exception. lifelines more often emits a
+    ConvergenceWarning and still returns a (possibly ill-conditioned) fit, so any
+    warnings raised during the fit are captured into `warnings` for inspection
     """
     base = {
         "n_train": len(df_train), "n_test": len(df_test),
@@ -121,16 +157,23 @@ def _fit_fold_model(df_train: pd.DataFrame, df_test: pd.DataFrame,
         "n_events_test": int(df_test[EVENT_COL].sum()),
     }
     try:
-        cph = CoxPHFitter(penalizer=penalizer, l1_ratio=l1_ratio)
-        cph.fit(df_train[[DURATION_COL, EVENT_COL] + covariates],
-                duration_col=DURATION_COL, event_col=EVENT_COL)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cph = CoxPHFitter(penalizer=penalizer, l1_ratio=l1_ratio)
+            cph.fit(df_train[[DURATION_COL, EVENT_COL] + covariates],
+                    duration_col=DURATION_COL, event_col=EVENT_COL)
+        warn_text = " | ".join(
+            f"{w.category.__name__}: {str(w.message).strip().splitlines()[0][:200]}"
+            for w in caught
+            if not issubclass(w.category, (DeprecationWarning, FutureWarning, ImportWarning))
+        )
         test_c = concordance_index(
             df_test[DURATION_COL], -cph.predict_partial_hazard(df_test), df_test[EVENT_COL]
         )
         cov = cph.summary[["coef", "exp(coef)", "exp(coef) lower 95%", "exp(coef) upper 95%", "p"]].copy()
         cov.columns = ["coef", "hr", "hr_ci_low", "hr_ci_high", "p"]
         return {**base, "train_c": cph.concordance_index_, "test_c": test_c,
-                "converged": True, "covariates": cov}
+                "converged": True, "warnings": warn_text, "covariates": cov}
     except Exception as e:
         logger.warning("  fit failed for %s: %s", covariates, e)
         cov = pd.DataFrame(
@@ -138,12 +181,13 @@ def _fit_fold_model(df_train: pd.DataFrame, df_test: pd.DataFrame,
             index=covariates,
         )
         return {**base, "train_c": np.nan, "test_c": np.nan,
-                "converged": False, "covariates": cov}
+                "converged": False, "warnings": f"{type(e).__name__}: {e}", "covariates": cov}
 
 
 def _cv_compare_models(df: pd.DataFrame, z_cols: list[str], n_splits: int = N_SPLITS,
+                        n_repeats: int = N_REPEATS,
                         seed: int = Config.random_seed) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Stratified k-fold CV comparing 'clinical' vs 'clinical+latent' models.
+    """Repeated stratified k-fold CV comparing 'clinical' vs 'clinical+latent' models.
 
     The same fold indices are reused for both models, so every fold yields a
     paired (clinical_test_c, clinical+latent_test_c) observation.
@@ -152,12 +196,15 @@ def _cv_compare_models(df: pd.DataFrame, z_cols: list[str], n_splits: int = N_SP
         "clinical":        CLINICAL_COLS,
         "clinical+latent": CLINICAL_COLS + z_cols,
     }
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    skf = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=seed)
     strat_key = _strat_key(df)
 
     model_rows, covariate_rows = [], []
     for fold_id, (train_idx, test_idx) in enumerate(skf.split(df, strat_key)):
-        df_train, df_test = df.iloc[train_idx], df.iloc[test_idx]
+        # One scaler per fold, shared by both models so they see identical covariates
+        df_train, df_test = _scale_fold(
+            df.iloc[train_idx], df.iloc[test_idx], CLINICAL_COLS + z_cols
+        )
         for name, covariates in models.items():
             result = _fit_fold_model(df_train, df_test, covariates)
             model_rows.append({
@@ -167,6 +214,7 @@ def _cv_compare_models(df: pd.DataFrame, z_cols: list[str], n_splits: int = N_SP
                 "n_events_train": result["n_events_train"],
                 "n_events_test": result["n_events_test"],
                 "converged": result["converged"],
+                "warnings": result["warnings"],
             })
             for covariate, row in result["covariates"].iterrows():
                 covariate_rows.append({

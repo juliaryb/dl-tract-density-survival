@@ -89,7 +89,7 @@ def compare_latent_dims(raw_dataset, stats: dict, device, out_dir: Path) -> None
 
     dims = [d for d in _LATENT_DIMS if f"latent{d}_zscore_cosinelr" in results]
     means = [results[f"latent{d}_zscore_cosinelr"]["r2"]["mean"] for d in dims]
-    stds  = [results[f"latent{d}_zscore_cosinelr"]["r2"]["std"]  for d in dims]
+    stds  = [results[f"latent{d}_zscore_cosinelr"]["r2"]["std_err"]  for d in dims]
 
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.errorbar(dims, means, yerr=stds, marker="o", capsize=4)

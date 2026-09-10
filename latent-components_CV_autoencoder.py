@@ -231,7 +231,7 @@ if __name__ == "__main__":
     os.makedirs(results_root, exist_ok=True)
 
     # Loading data
-    DATA = pd.read_csv(f"{results_root}/data-clinical_latent-{latent_dimensions}.csv", sep=',').sort_values(by=["cohort", "id"]).reset_index(drop=True)
+    DATA = pd.read_csv(f"{root}/clinical_latent_{latent_dimensions}.csv", sep=',').sort_values(by=["cohort", "id"]).reset_index(drop=True)
     duration_col = 'OS (days) - corrected'
     event_col = 'status'
 
@@ -240,13 +240,13 @@ if __name__ == "__main__":
     reg_precision = 6
     reg_steps = 50
     regularization_path = np.round(np.logspace(-1, -3, 50), reg_precision)
-    L1_ratio = 0.5                    # L1 ratio for elastic net regularization (1.0 = LASSO, 0.0 = Ridge)
+    L1_ratio = 0.8                    # L1 ratio for elastic net regularization (1.0 = LASSO, 0.0 = Ridge)
 
     ## KFold CV
     split_type = "rnd_stratified"     # Training and validation data split. Choices: ['rnd_stratified', 'kfold_stratified']
     repeated_kfolds = True            # If True, use RepeatedStratifiedKFold. If False, use StratifiedKFold
-    n_splits = 6                      # Number of folds for cross-validation.
-    n_repeats = 5                     # Number of repeats for RepeatedStratifiedK.
+    n_splits = 5                      # Number of folds for cross-validation.
+    n_repeats = 6                     # Number of repeats for RepeatedStratifiedK.
     plot_folds = True                 # Produce log-HR and C-indices along the regularization path
 
     save_dir = os.path.join(results_root, f"AutoEncoder-TD_Latent-{latent_dimensions}_L1-{L1_ratio}")

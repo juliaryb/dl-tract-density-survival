@@ -2,8 +2,9 @@
 Per-latent-component Cox screening across all latent dimensions.
 
 For each latent dim, for each individual z in that dim's latent vector, fits
-"clinical" (age, sex) vs "clinical+z" via the same stratified k-fold CV as
-cox.py, and checks whether any single component beats the clinical baseline.
+"clinical" (age, sex) vs "clinical+z" via the same repeated stratified k-fold CV
+as cox.py (5 folds x 6 repeats), and checks whether any single component beats
+the clinical baseline.
 
 This is a much larger search than cox.py's whole-dim comparison (sum of all
 z's across all dims -- 272 candidates for the default LATENT_DIMS) -- treat any
@@ -22,12 +23,12 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import RepeatedStratifiedKFold
 
 from config import Config
 from cox import (
-    CLINICAL_COLS, LATENT_DIMS, N_SPLITS,
-    _build_df, _fit_fold_model, _get_or_encode, _strat_key,
+    CLINICAL_COLS, LATENT_DIMS, N_SPLITS, N_REPEATS,
+    _build_df, _fit_fold_model, _get_or_encode, _scale_fold, _strat_key,
 )
 from utils import load_preprocessing_stats, load_splits
 
@@ -36,19 +37,23 @@ logger = logging.getLogger(__name__)
 
 
 def _cv_screen_components(df: pd.DataFrame, z_cols: list[str], n_splits: int = N_SPLITS,
+                           n_repeats: int = N_REPEATS,
                            seed: int = Config.random_seed) -> pd.DataFrame:
-    """Stratified k-fold CV: 'clinical' baseline vs 'clinical+z' for every z.
+    """Repeated stratified k-fold CV: 'clinical' baseline vs 'clinical+z' for every z.
 
     The clinical baseline is fit once per fold (it doesn't depend on z), and
     every candidate in a fold uses the same train/test split as the baseline
     and every other candidate, for a fair paired comparison.
     """
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    skf = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=seed)
     strat_key = _strat_key(df)
 
     rows = []
     for fold_id, (train_idx, test_idx) in enumerate(skf.split(df, strat_key)):
-        df_train, df_test = df.iloc[train_idx], df.iloc[test_idx]
+        # One scaler per fold, shared by the baseline and every candidate
+        df_train, df_test = _scale_fold(
+            df.iloc[train_idx], df.iloc[test_idx], CLINICAL_COLS + z_cols
+        )
 
         base = _fit_fold_model(df_train, df_test, CLINICAL_COLS)
         rows.append({
