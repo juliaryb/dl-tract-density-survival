@@ -4,7 +4,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from scipy.stats import pearsonr
 from skimage.metrics import structural_similarity
 from scipy.stats import sem
 from config import Config
@@ -42,14 +41,14 @@ DEFAULT_DATA_RANGE = 927.4595
 
 
 def _pointwise(inp: np.ndarray, rec: np.ndarray) -> dict:
-    """R², MAE, MSE and Pearson r over a flat pair of arrays."""
+    """R², MAE and MSE over a flat pair of arrays.
+    """
     ss_res = ((inp - rec) ** 2).sum()
     ss_tot = ((inp - inp.mean()) ** 2).sum()
     return {
         "r2": float(1.0 - ss_res / (ss_tot + 1e-8)),
         "mae": float(np.abs(inp - rec).mean()),
         "mse": float(((inp - rec) ** 2).mean()),
-        "pearson_r": float(pearsonr(inp, rec)[0]),
     }
 
 
@@ -61,7 +60,7 @@ def subject_metrics(
 ) -> dict:
     """Reconstruction metrics for one volume pair.
 
-    Returns R², MAE, MSE, Pearson r and SSIM over the whole volume and, when a
+    Returns R², MAE, MSE and SSIM over the whole volume and, when a
     brain mask is supplied, the same metrics restricted to the masked region of
     interest (suffix "_roi").
 
